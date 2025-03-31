@@ -29,13 +29,14 @@ Create a `.env.local` file in the root directory with the following variables:
 ```env
 NEXT_PUBLIC_THIRDWEB_CREDENTIAL_ID=your_credential_id
 NEXT_PUBLIC_THIRDWEB_API_URL=http://localhost:3005
+NEXT_PUBLIC_CIRCLE_API_KEY=your_circle_api_key
 ```
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/thirdweb-atomic-batch-transaction-cctp.git
+git clone https://github.com/eltontay/thirdweb-atomic-batch-transaction-cctp.git
 cd thirdweb-atomic-batch-transaction-cctp
 ```
 
