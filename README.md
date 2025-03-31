@@ -19,10 +19,26 @@ This project demonstrates cross-chain USDC transfers using Circle CCTP (Cross-Ch
 
 - Node.js 18 or higher
 - npm or yarn
-- Thirdweb Engine running locally on port 3005
+- Docker and Docker Compose installed
+- Thirdweb Engine running locally on port 3005 (see [Setup Thirdweb Engine](#setup-thirdweb-engine) section)
 - Testnet tokens for gas fees
 - Circle Developer Console account ([Sign up here](https://console.circle.com/))
 - Native tokens for both source and destination chains (ETH for Sepolia, ETH for Base Sepolia, AVAX for Fuji, ETH for Linea Sepolia)
+
+## Setup Thirdweb Engine
+
+This project requires a local instance of Thirdweb Engine running on port 3005. You can set it up in two ways:
+
+1. **Using Replit Template**:
+   - Visit [Replit Template](https://replit.com/@buildoncircle/Self-Host-Thirdweb-Engine-with-Programmable-Wallet)
+   - Fork the template
+   - **Important**: Download the files to your local machine as this setup requires Docker, which is not supported in Replit's environment
+
+2. **Using GitHub Repository**:
+   - Clone the [GitHub Repository](https://github.com/eltontay/thirdweb_engine_circle_pw)
+   - Follow the setup instructions in the repository
+
+After setting up Thirdweb Engine locally, ensure it's running on port 3005 before starting this demo application.
 
 ## Environment Variables
 
@@ -73,7 +89,7 @@ yarn dev
 
 The project uses:
 - Next.js 14 with App Router
-- Thirdweb Engine for wallet management and transactions
+- Thirdweb Engine (running locally on Docker) for wallet management and transactions
 - Circle CCTP Protocol
 - Ethers.js for blockchain interactions
 - Tailwind CSS for styling
