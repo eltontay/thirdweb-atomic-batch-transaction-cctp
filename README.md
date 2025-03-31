@@ -1,10 +1,10 @@
 # Thirdweb Engine Atomic Batch CCTP Demo
 
-This project demonstrates cross-chain USDC transfers using Circle CCTP (Cross-Chain Transfer Protocol) with Thirdweb Smart Circle Wallets. The demo showcases atomic batch transactions, allowing users to approve and burn USDC in a single transaction, reducing gas costs and improving transaction reliability. The demo supports transfers between different testnet chains including Ethereum Sepolia, Base Sepolia, Avalanche Fuji, and Linea Sepolia.
+This project demonstrates cross-chain USDC transfers using Circle CCTP (Cross-Chain Transfer Protocol) with Thirdweb Engine's Smart Circle Wallets. The demo showcases atomic batch transactions, allowing users to approve and burn USDC in a single transaction, reducing gas costs and improving transaction reliability. The demo supports transfers between different testnet chains including Ethereum Sepolia, Base Sepolia, Avalanche Fuji, and Linea Sepolia.
 
 ## Features
 
-- Create Thirdweb Smart Circle Wallets on different testnet chains
+- Create Thirdweb Engine's Smart Circle Wallets on different testnet chains
 - Atomic batch transactions for USDC approval and burning
 - Transfer USDC between chains using Circle CCTP
 - Real-time balance tracking
@@ -21,6 +21,8 @@ This project demonstrates cross-chain USDC transfers using Circle CCTP (Cross-Ch
 - npm or yarn
 - Thirdweb Engine running locally on port 3005
 - Testnet tokens for gas fees
+- Circle Developer Console account ([Sign up here](https://console.circle.com/))
+- Native tokens for both source and destination chains (ETH for Sepolia, ETH for Base Sepolia, AVAX for Fuji, ETH for Linea Sepolia)
 
 ## Environment Variables
 
@@ -31,6 +33,8 @@ NEXT_PUBLIC_THIRDWEB_CREDENTIAL_ID=your_credential_id
 NEXT_PUBLIC_THIRDWEB_API_URL=http://localhost:3005
 NEXT_PUBLIC_CIRCLE_API_KEY=your_circle_api_key
 ```
+
+You can create your Circle API key in the [Circle Developer Console](https://console.circle.com/).
 
 ## Installation
 
@@ -59,10 +63,11 @@ yarn dev
 ## Usage
 
 1. Create source and destination Thirdweb Smart Circle Wallets on your chosen chains
-2. Fund the source wallet with testnet USDC
-3. Enter the amount to transfer
-4. Click "Transfer" to initiate the cross-chain transfer
-5. Monitor the transfer progress in the UI
+2. Get testnet USDC from the [Circle USDC Faucet](https://faucet.circle.com/)
+3. Fund the source wallet with testnet USDC
+4. Enter the amount to transfer
+5. Click "Transfer" to initiate the cross-chain transfer
+6. Monitor the transfer progress in the UI
 
 ## Architecture
 
@@ -127,3 +132,13 @@ src/
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Security
+
+Please read our [Security Policy](SECURITY.md) for details on our code of conduct and the process for submitting pull requests.
+
+## Questions & Support
+
+Have questions? Feel free to:
+- Connect with me on X (Twitter): [@txnsheng](https://twitter.com/txnsheng)
+- Join the Circle Discord community: [buildoncircle](https://discord.gg/@buildoncircle)
