@@ -1,5 +1,7 @@
 # Thirdweb Engine Atomic Batch CCTP Demo
 
+> **Important**: This project requires local setup and cannot be run directly in Replit or other online environments. You must fork this repository, download it to your local machine, and run it there.
+
 This project demonstrates cross-chain USDC transfers using Circle CCTP (Cross-Chain Transfer Protocol) with Thirdweb Engine's Smart Circle Wallets. The demo showcases atomic batch transactions, allowing users to approve and burn USDC in a single transaction, reducing gas costs and improving transaction reliability. The demo supports transfers between different testnet chains including Ethereum Sepolia, Base Sepolia, Avalanche Fuji, and Linea Sepolia.
 
 ## Features
