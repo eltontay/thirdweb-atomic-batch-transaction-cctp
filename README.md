@@ -47,8 +47,8 @@ After setting up Thirdweb Engine locally, ensure it's running on port 3005 befor
 Create a `.env.local` file in the root directory with the following variables:
 
 ```env
-NEXT_PUBLIC_THIRDWEB_CREDENTIAL_ID=your_credential_id
-NEXT_PUBLIC_THIRDWEB_API_URL=http://localhost:3005
+NEXT_PUBLIC_THIRDWEB_CREDENTIAL_ID=your_thirdweb_credential_id
+NEXT_PUBLIC_THIRDWEB_ENGINE_ACCESS_TOKEN=your_thirdweb_access_token
 NEXT_PUBLIC_CIRCLE_API_KEY=your_circle_api_key
 ```
 
