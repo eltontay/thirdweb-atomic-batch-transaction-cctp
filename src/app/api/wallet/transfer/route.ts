@@ -1,12 +1,6 @@
 import { NextResponse } from 'next/server';
-import { CCTP_CONFIG } from '@/types/cctp';
-import { getAddress, Interface } from 'ethers';
 
 const API_BASE_URL = 'http://localhost:3005';
-
-// ABI fragments for encoding
-const approveAbi = ['function approve(address spender, uint256 amount)'];
-const depositForBurnAbi = ['function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 deadline)'];
 
 export async function POST(request: Request) {
   console.log('=== Incoming Request to /api/wallet/transfer ===');
@@ -30,8 +24,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // We'll use Ethereum Sepolia's chain ID since that's where the USDC contracts are
-    const chainId = "11155111";
+    if (!body.sourceChain) {
+      return NextResponse.json(
+        { error: 'Source chain ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const chainId = body.sourceChain;
 
     const url = `${API_BASE_URL}/backend-wallet/${chainId}/send-transaction-batch-atomic`;
     const headers = {
@@ -55,7 +55,9 @@ export async function POST(request: Request) {
         {
           method: 'POST',
           headers,
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            transactions: body.transactions
+          })
         }
       );
 

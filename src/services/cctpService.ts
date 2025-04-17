@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { CCTP_CONFIG, WalletResponse, BalanceResponse, TransactionResponse, AttestationResponse, CCTPConfig, TransactionStatusResponse, TransferResponse } from '../types/cctp';
+import { CCTP_CONFIG, WalletResponse, BalanceResponse, TransactionResponse, AttestationResponse, CCTPConfig, TransactionStatusResponse, TransferResponse, PayrollRecipient, PayrollBatchResponse, RecipientTransferState, CCTPTransferStatus, CircleMessage } from '../types/cctp';
 import { Interface, getAddress } from 'ethers';
 import { pad } from 'viem';
 
@@ -7,11 +7,8 @@ const API_BASE_URL = 'http://localhost:3005';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as `0x${string}`;
 
 interface CircleAttestationResponse {
-  messages: Array<{
-    status: string;
-    message: string;
-    attestation: string;
-  }>;
+  message: string;
+  attestation: string;
 }
 
 export const createWallet = async (chain: string, label: string): Promise<WalletResponse> => {
@@ -49,95 +46,93 @@ export const getUSDCBalance = async (chain: string, walletAddress: string): Prom
   return response.data;
 };
 
-async function pollTransactionStatus(queueId: string, timeout = 300000): Promise<string> {
-  const startTime = Date.now();
-  let lastStatus = '';
-  let lastTxHash: string | undefined;
-  
-  while (Date.now() - startTime < timeout) {
+export async function pollTransactionStatus(queueId: string, shouldContinue?: () => boolean): Promise<string> {
+  const maxAttempts = 240; // 20 minutes total with 5-second intervals
+  const initialDelay = 5000; // Wait 5 seconds before first check
+  const pollingInterval = 5000; // Check every 5 seconds
+  let attempts = 0;
+
+  // Initial delay to allow transaction to process
+  console.log(`Starting to poll transaction status in ${initialDelay/1000} seconds...`);
+  await new Promise(resolve => setTimeout(resolve, initialDelay));
+
+  while (attempts < maxAttempts) {
+    // Check if we should continue polling
+    if (shouldContinue && !shouldContinue()) {
+      throw new Error('Polling cancelled');
+    }
+
     try {
+      console.log(`Polling transaction status for queueId: ${queueId}, attempt: ${attempts + 1}`);
       const response = await fetch(`/api/transaction/status/${queueId}`);
+      
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(`API error: ${errorData.error || 'Unknown error'}`);
+        console.error('Transaction status error:', {
+          status: response.status,
+          error: errorData,
+          queueId,
+          attempt: attempts + 1
+        });
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
       
-      const data: TransactionStatusResponse = await response.json();
-      const currentTxHash = data.result.transactionHash || data.result.txHash;
+      const data = await response.json();
+      console.log('Transaction status data:', data, 'Attempt:', attempts + 1, 'Time elapsed:', ((attempts * pollingInterval + initialDelay)/1000/60).toFixed(1), 'minutes');
       
-      // Log full response data for debugging
-      console.log(`Transaction status for ${queueId}:`, {
-        status: data.result.status,
-        txHash: currentTxHash,
-        queueId: queueId,
-        fullData: data.result
-      });
-
-      // Track status changes
-      if (data.result.status !== lastStatus) {
-        console.log(`Status changed from ${lastStatus || 'initial'} to ${data.result.status}`);
-        lastStatus = data.result.status;
-      }
-
-      // Track txHash changes
-      if (currentTxHash !== lastTxHash) {
-        console.log(`TxHash changed from ${lastTxHash || 'none'} to ${currentTxHash || 'none'}`);
-        lastTxHash = currentTxHash;
+      if (data.result.transactionHash) {
+        // Check if the transaction is actually confirmed
+        if (data.result.onchainStatus === 'success') {
+          console.log('Transaction confirmed:', {
+            queueId,
+            transactionHash: data.result.transactionHash,
+            status: data.result.status,
+            onchainStatus: data.result.onchainStatus
+          });
+          return data.result.transactionHash;
+        } else if (data.result.onchainStatus === 'failed') {
+          throw new Error(`Transaction failed on-chain: ${data.result.errorMessage || 'No error details available'}`);
+        }
+      } else if (data.result.status === 'failed' || data.result.status === 'errored') {
+        throw new Error(`Transaction ${data.result.status}: ${data.result.errorMessage || 'No error details available'}`);
       }
       
-      switch (data.result.status) {
-        case 'mined':
-          // If we have a current txHash, return it
-          if (currentTxHash) {
-            return currentTxHash;
-          }
-          // If we have a previously stored txHash, use that
-          if (lastTxHash) {
-            return lastTxHash;
-          }
-          // If we don't have a txHash but status is mined, wait a bit and try again
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        case 'failed':
-          throw new Error(`Transaction failed: ${currentTxHash || 'No transaction hash'}`);
-        case 'queued':
-        case 'submitted':
-        case 'sent':
-          // Store txHash if available
-          if (currentTxHash) {
-            lastTxHash = currentTxHash;
-          }
-          // Wait before next poll
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        default:
-          throw new Error(`Unknown transaction status: ${data.result.status}`);
-      }
+      await new Promise(resolve => setTimeout(resolve, pollingInterval));
+      attempts++;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Transaction failed')) {
-        throw error;
-      }
       console.error('Error polling transaction status:', error);
-      // Wait before retry on error
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      throw error;
     }
   }
-  
-  throw new Error(`Transaction polling timed out after ${timeout/1000} seconds`);
+
+  throw new Error('Transaction polling timeout after 20 minutes');
+}
+
+// Helper function to calculate total amount from recipients
+function calculateTotalAmount(recipients: { amount: string }[]): bigint {
+  return recipients.reduce((sum, recipient) => {
+    return sum + BigInt(recipient.amount);
+  }, BigInt(0));
+}
+
+// Helper function to get chain config
+function getChainConfig(chain: string): CCTPConfig[keyof CCTPConfig] {
+  const config = CCTP_CONFIG[chain];
+  if (!config) {
+    throw new Error(`Invalid chain: ${chain}`);
+  }
+  return config;
 }
 
 export async function sendAtomicBatchTransaction(
   sourceConfig: CCTPConfig[keyof CCTPConfig],
-  transactions: { toAddress: string; data: string; value: string }[],
   walletAddress: string,
-  destinationChain: string,
-  destinationAddress: string
-): Promise<string> {
+  recipients: { chain: string; address: string; amount: string }[],
+  customTransactions?: { toAddress: string; data: string; value: string }[]
+): Promise<{ queueId: string; recipientStates: { [address: string]: RecipientTransferState } }> {
   try {
-    // Convert amount to BigInt and handle decimals
-    const amount = BigInt(transactions[1].value);
+    const totalAmount = calculateTotalAmount(recipients);
 
-    // Create interfaces for encoding function calls
     const approveInterface = new Interface([
       'function approve(address spender, uint256 amount)'
     ]);
@@ -145,48 +140,48 @@ export async function sendAtomicBatchTransaction(
       'function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 deadline)'
     ]);
 
-    // Get the encoded data for approve
     const approveData = approveInterface.encodeFunctionData('approve', [
-      sourceConfig.tokenMessenger, // spender is the token messenger contract
-      amount.toString() // amount to approve as string
+      sourceConfig.tokenMessenger,
+      totalAmount.toString()
     ]);
 
-    // Calculate max fee (1/5000 of amount)
-    const maxFee = amount / BigInt(5000);
+    const burnTransactions = recipients.map((recipient) => {
+      const destinationConfig = getChainConfig(recipient.chain);
+      const maxFee = BigInt(recipient.amount) / BigInt(5000);
 
-    // Get the encoded data for depositForBurn
-    const depositForBurnData = depositForBurnInterface.encodeFunctionData('depositForBurn', [
-      amount.toString(), // amount as string
-      CCTP_CONFIG[destinationChain].domain.toString(), // destination domain as string
-      pad(destinationAddress as `0x${string}`), // mint recipient as bytes32 (using destination address)
-      sourceConfig.usdc as `0x${string}`, // burn token
-      "0x0000000000000000000000000000000000000000000000000000000000000000", // destination caller as full zero string
-      maxFee.toString(), // max fee as string
-      "1000" // deadline - using the known working value
-    ]);
+      console.log('Creating burn transaction for:', {
+        chain: recipient.chain,
+        domain: destinationConfig.domain,
+        recipient: recipient.address,
+        amount: recipient.amount,
+        maxFee: maxFee.toString(),
+        deadline: "1000"
+      });
 
-    // Update transactions with encoded data
+      return {
+        toAddress: sourceConfig.tokenMessenger,
+        data: depositForBurnInterface.encodeFunctionData('depositForBurn', [
+          recipient.amount,
+          destinationConfig.domain,
+          pad(recipient.address as `0x${string}`),
+          sourceConfig.usdc as `0x${string}`,
+          "0x0000000000000000000000000000000000000000000000000000000000000000",
+          maxFee.toString(),
+          "1000"
+        ]),
+        value: "0"
+      };
+    });
+
     const encodedTransactions = [
       {
         toAddress: sourceConfig.usdc,
         data: approveData,
         value: "0"
       },
-      {
-        toAddress: sourceConfig.tokenMessenger,
-        data: depositForBurnData,
-        value: "0" // Value is 0 because amount is in the data
-      }
+      ...burnTransactions,
+      ...(customTransactions || [])
     ];
-
-    console.log('Sending encoded transactions:', {
-      amount: amount.toString(),
-      transactions: encodedTransactions,
-      approveData,
-      depositForBurnData,
-      sourceAddress: walletAddress,
-      destinationAddress // Log destination address for verification
-    });
 
     const response = await fetch('/api/wallet/transfer', {
       method: 'POST',
@@ -194,7 +189,10 @@ export async function sendAtomicBatchTransaction(
         'Content-Type': 'application/json',
         'x-backend-wallet-address': walletAddress
       },
-      body: JSON.stringify({ transactions: encodedTransactions })
+      body: JSON.stringify({ 
+        transactions: encodedTransactions,
+        sourceChain: sourceConfig.chainId.toString()
+      })
     });
 
     if (!response.ok) {
@@ -203,10 +201,22 @@ export async function sendAtomicBatchTransaction(
     }
 
     const data: TransferResponse = await response.json();
-    console.log('Transfer queued with ID:', data.result.queueId);
+    
+    // Initialize recipient states with individual burn transaction IDs
+    const recipientStates: { [address: string]: RecipientTransferState } = {};
+    recipients.forEach((recipient, index) => {
+      // Skip the first transaction (approve) and map each recipient to their burn transaction
+      const burnTxIndex = index + 1; // +1 to account for the approve transaction
+      recipientStates[recipient.address] = { 
+        status: 'idle',
+        burnQueueId: data.result.queueId // We'll need to modify the backend to return individual queue IDs
+      };
+    });
 
-    // Poll for transaction status and return the transaction hash
-    return await pollTransactionStatus(data.result.queueId);
+    return {
+      queueId: data.result.queueId,
+      recipientStates
+    };
   } catch (error) {
     console.error('Error in sendAtomicBatchTransaction:', error);
     throw error;
@@ -215,102 +225,316 @@ export async function sendAtomicBatchTransaction(
 
 export async function waitForAttestation(
   sourceDomain: string,
-  transactionHash: string
-): Promise<AttestationResponse> {
-  const maxAttempts = 30; // 5 minutes total with 10-second intervals
+  transactionHash: string,
+  shouldContinue?: () => boolean
+): Promise<CircleMessage[]> {
+  const maxAttempts = 720; // 6 hours with 30-second intervals
+  const initialDelay = 30000; // Wait 30 seconds before first check
+  const pollingInterval = 30000; // Poll every 30 seconds
   let attempts = 0;
 
+  console.log('Waiting for attestation with:', {
+    sourceDomain,
+    transactionHash
+  });
+
+  // Initial delay to allow attestation to be generated
+  console.log(`Waiting ${initialDelay/1000} seconds before first attestation check...`);
+  await new Promise(resolve => setTimeout(resolve, initialDelay));
+
   while (attempts < maxAttempts) {
+    if (shouldContinue && !shouldContinue()) {
+      throw new Error('Attestation polling cancelled');
+    }
+
     try {
       attempts++;
-      console.log(`Attestation attempt ${attempts}/${maxAttempts}`);
+      console.log(`Attestation attempt ${attempts}/${maxAttempts} (${(attempts * pollingInterval/1000/60).toFixed(1)} minutes elapsed)`);
       
       const response = await axios.get<AttestationResponse>(`/api/attestation/${sourceDomain}/${transactionHash}`);
       
-      // Log the response for debugging
-      console.log('Attestation response:', {
-        status: response.status,
-        data: response.data
-      });
-
-      // If we get a complete attestation, return it immediately
-      if (response.data.attestation && response.status === 200) {
-        console.log('Complete attestation found:', response.data);
-        return response.data;
+      // Check if we have a valid attestation
+      if (!response.data?.messages?.[0]?.message || !response.data?.messages?.[0]?.attestation) {
+        console.log('Attestation not ready yet:', response.data);
+        await new Promise(resolve => setTimeout(resolve, pollingInterval));
+        continue;
       }
+
+      // Return all messages from the attestation response
+      console.log('Attestation ready with messages:', {
+        messageCount: response.data.messages.length,
+        messages: response.data.messages.map((msg: any, idx: number) => ({
+          index: idx,
+          messageLength: msg.message.length,
+          attestationLength: msg.attestation.length
+        }))
+      });
       
-      // For any other response (including 202/pending), wait and continue polling
-      console.log('Attestation not complete yet, continuing to poll...');
-      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds before next attempt
-      
+      return response.data.messages;
     } catch (error) {
-      // Log error but continue polling
       console.error('Error in attestation attempt:', error);
-      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds before next attempt
+      console.error('Error response:', {
+        error: error,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+      await new Promise(resolve => setTimeout(resolve, pollingInterval));
     }
   }
 
-  throw new Error(`Timeout waiting for attestation after ${maxAttempts} attempts`);
+  throw new Error(`Timeout waiting for attestation after 6 hours`);
 }
 
 export async function receiveMessage(
   chain: string,
   walletId: string,
   message: string,
-  attestation: string
+  attestation: string,
+  shouldContinue?: () => boolean
 ): Promise<TransactionResponse> {
+  const maxRetries = 3;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    try {
+      const config = getChainConfig(chain);
+      const checksummedWalletId = getAddress(walletId);
+      const checksummedMessageTransmitter = getAddress(config.messageTransmitter);
+
+      // Add exponential backoff delay between retries
+      if (attempt > 0) {
+        const backoffDelay = Math.min(30000, 10000 * Math.pow(2, attempt - 1)); // Max 30 seconds
+        console.log(`Retry attempt ${attempt + 1}, waiting ${backoffDelay/1000}s with exponential backoff...`);
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      }
+
+      console.log('Calling receiveMessage with:', {
+        chain,
+        chainId: config.chainId,
+        messageTransmitter: checksummedMessageTransmitter,
+        recipientWallet: checksummedWalletId,
+        attempt: attempt + 1,
+        messageLength: message.length,
+        attestationLength: attestation.length
+      });
+
+      const response = await fetch('/api/wallet/receive', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-backend-wallet-address': checksummedWalletId
+        },
+        body: JSON.stringify({
+          chain: config.chainId.toString(),
+          contractAddress: checksummedMessageTransmitter,
+          functionName: 'receiveMessage(bytes,bytes)',
+          abiParameters: [message, attestation]
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Receive message error:', {
+          status: response.status,
+          error: errorData,
+          chain,
+          chainId: config.chainId,
+          attempt: attempt + 1
+        });
+        
+        // Check for specific error types
+        const errorMessage = errorData.error || 'Failed to receive message';
+        if (errorMessage.includes('nonce')) {
+          console.error('Nonce error detected:', {
+            error: errorMessage,
+            chain,
+            wallet: checksummedWalletId
+          });
+        }
+        
+        // If it's a timeout error, nonce error, or polling timeout, retry
+        if (errorMessage.includes('timeout') || 
+            errorMessage.includes('nonce') || 
+            errorMessage.includes('Transaction polling timeout')) {
+          console.log('Retrying due to:', errorMessage);
+          attempt++;
+          continue;
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      console.log('Receive message response:', {
+        ...data,
+        chain,
+        wallet: checksummedWalletId,
+        attempt: attempt + 1
+      });
+
+      if (!data.result?.queueId) {
+        throw new Error('No queueId in response');
+      }
+
+      // Add longer initial delay before polling
+      console.log('Waiting 15 seconds before starting to poll...');
+      await new Promise(resolve => setTimeout(resolve, 15000));
+
+      try {
+        const txHash = await pollTransactionStatus(data.result.queueId, shouldContinue);
+        
+        // Add delay after successful transaction to allow nonce sync
+        console.log('Waiting 15s for bundler to sync nonce...');
+        await new Promise(resolve => setTimeout(resolve, 15000));
+        
+        // Log successful transaction completion
+        console.log('Successfully completed receiveMessage:', {
+          chain,
+          wallet: checksummedWalletId,
+          queueId: data.result.queueId,
+          transactionHash: txHash,
+          attempt: attempt + 1
+        });
+        
+        return { transactionHash: txHash };
+      } catch (pollError) {
+        console.error('Error polling transaction status:', pollError);
+        
+        // If polling times out, retry the entire receiveMessage call
+        if (pollError instanceof Error && pollError.message.includes('timeout')) {
+          console.log('Polling timed out, retrying entire receiveMessage call...');
+          attempt++;
+          continue;
+        }
+        
+        throw pollError;
+      }
+    } catch (error) {
+      console.error(`Error in receiveMessage attempt ${attempt + 1}:`, error);
+      
+      if (attempt === maxRetries - 1) {
+        throw error;
+      }
+      attempt++;
+    }
+  }
+
+  throw new Error('Max retries exceeded for receiveMessage');
+}
+
+export async function sendPayrollBatchTransaction(
+  sourceChain: string,
+  walletAddress: string,
+  recipients: PayrollRecipient[]
+): Promise<PayrollBatchResponse> {
   try {
-    const config = CCTP_CONFIG[chain];
-    if (!config) {
-      throw new Error(`Invalid chain: ${chain}`);
+    if (!recipients?.length) {
+      throw new Error('No recipients provided');
     }
 
-    // Checksum the addresses
-    const checksummedWalletId = getAddress(walletId);
-    const checksummedMessageTransmitter = getAddress(config.messageTransmitter);
+    const sourceConfig = getChainConfig(sourceChain);
+    const totalAmount = calculateTotalAmount(recipients);
 
-    console.log('Receiving message with:', {
-      chain,
-      walletId: checksummedWalletId,
-      messageTransmitter: checksummedMessageTransmitter,
-      message,
-      attestation
-    });
+    const { queueId, recipientStates } = await sendAtomicBatchTransaction(
+      sourceConfig,
+      walletAddress,
+      recipients
+    );
 
-    const response = await fetch('/api/wallet/receive', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-backend-wallet-address': checksummedWalletId
-      },
-      body: JSON.stringify({
-        chain,
-        contractAddress: checksummedMessageTransmitter,
-        abiParameters: [message, attestation]
-      })
-    });
+    return {
+      result: {
+        queueId,
+        totalAmount: totalAmount.toString(),
+        recipientCount: recipients.length,
+        recipientStates
+      }
+    };
+  } catch (error) {
+    console.error('Error in sendPayrollBatchTransaction:', error);
+    throw error;
+  }
+}
 
+export async function getCircleAttestation(
+  sourceChain: string,
+  transactionHash: string
+): Promise<{ message: string; attestation: string }> {
+  try {
+    const config = getChainConfig(sourceChain);
+    const response = await fetch(`/api/attestation/${config.domain}/${transactionHash}`);
+    
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to receive message');
+      if (response.status === 202) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return getCircleAttestation(sourceChain, transactionHash);
+      }
+      throw new Error('Failed to get attestation');
     }
 
     const data = await response.json();
-    console.log('Receive message response:', data);
-
-    if (!data.result?.queueId) {
-      throw new Error('No queueId in response');
-    }
-
-    // Poll for transaction status
-    const txHash = await pollTransactionStatus(data.result.queueId);
-    console.log('Receive transaction hash:', txHash);
-
     return {
-      transactionHash: txHash
+      message: data.message,
+      attestation: data.attestation
     };
   } catch (error) {
-    console.error('Error in receiveMessage:', error);
+    console.error('Error getting Circle attestation:', error);
     throw error;
   }
-} 
+}
+
+export async function processRecipientMinting(
+  destinationChain: string,
+  senderWallet: string,
+  message: string,
+  attestation: string,
+  onStateUpdate?: (state: { status: CCTPTransferStatus; message: string; transactionHash?: string; mintTransactionHash?: string }) => void
+): Promise<string> {
+  try {
+    const shouldContinue = () => !!onStateUpdate;
+
+    if (onStateUpdate) {
+      onStateUpdate({
+        status: 'receiving',
+        message: 'Receiving tokens on destination chain...'
+      });
+    }
+
+    console.log('Processing recipient minting:', {
+      destinationChain,
+      senderWallet
+    });
+
+    // Call receiveMessage using the sender's wallet
+    const receiveResponse = await receiveMessage(
+      destinationChain,
+      senderWallet,
+      message,
+      attestation,
+      shouldContinue
+    );
+
+    // Add additional delay after successful minting to ensure nonce sync
+    console.log('Adding extra delay after minting to ensure nonce sync...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    if (onStateUpdate) {
+      onStateUpdate({
+        status: 'completed',
+        message: 'Transfer completed!',
+        mintTransactionHash: receiveResponse.transactionHash
+      });
+    }
+
+    return receiveResponse.transactionHash;
+  } catch (error) {
+    console.error('Error in processRecipientMinting:', error);
+    
+    if (onStateUpdate) {
+      onStateUpdate({
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Unknown error occurred'
+      });
+    }
+    
+    throw error;
+  }
+}

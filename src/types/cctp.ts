@@ -35,35 +35,51 @@ export interface TransactionResponse {
   transactionHash: string;
 }
 
-export interface AttestationResponse {
+export interface CircleMessage {
   message: string;
   attestation: string;
+  status: string;
+}
+
+export interface AttestationResponse {
+  messages: CircleMessage[];
 }
 
 export type CCTPTransferStatus = 
   | 'idle'
   | 'approving'
-  | 'burning'
+  | 'mining'
+  | 'processing'
   | 'waitingForAttestation'
   | 'receiving'
   | 'completed'
   | 'failed';
 
-export interface CCTPTransferState {
+export interface RecipientTransferState {
   status: CCTPTransferStatus;
   error?: string;
-  sourceTransactionHash?: string;
-  destinationTransactionHash?: string;
+  message?: string;
+  transactionHash?: string;
+  mintTransactionHash?: string;
+  burnQueueId?: string;
   attestation?: {
     message: string;
     attestation: string;
   };
-  approvalHash?: string;
-  burnHash?: string;
-  receiveHash?: string;
 }
 
-export type TransactionStatus = 'queued' | 'submitted' | 'sent' | 'mined' | 'failed';
+export interface CCTPTransferState {
+  status: CCTPTransferStatus;
+  error?: string;
+  sourceTransactionHash?: string;
+  approvalHash?: string;
+  burnHash?: string;
+  recipientStates: {
+    [address: string]: RecipientTransferState;
+  };
+}
+
+export type TransactionStatus = 'queued' | 'submitted' | 'sent' | 'mined' | 'failed' | 'errored';
 
 export interface TransactionStatusResponse {
   result: {
@@ -81,6 +97,7 @@ export interface TransactionStatusResponse {
     gasLimit: string;
     maxPriorityFeePerGas: string;
     maxFeePerGas: string;
+    errorMessage?: string;
   };
 }
 
@@ -88,6 +105,32 @@ export interface TransferResponse {
   result: {
     queueId: string;
   };
+}
+
+export interface PayrollRecipient {
+  address: string;
+  amount: string; // Amount in USDC (with decimals)
+  chain: string; // The destination chain for this recipient
+}
+
+export interface PayrollBatchResponse {
+  result: {
+    queueId: string;
+    totalAmount: string;
+    recipientCount: number;
+    recipientStates: {
+      [address: string]: RecipientTransferState;
+    };
+  };
+}
+
+export interface PayrollBatchStatus {
+  status: TransactionStatus;
+  totalAmount: string;
+  recipientCount: number;
+  completedTransfers: number;
+  failedTransfers: number;
+  transactionHash?: string;
 }
 
 export const CCTP_CONFIG: CCTPConfig = {
