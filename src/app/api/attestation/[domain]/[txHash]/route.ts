@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 const API_BASE_URL = 'https://iris-api-sandbox.circle.com/v2/messages';
 const MAX_ATTEMPTS = 3;
-const RETRY_DELAY = 2000;
+const RETRY_DELAY = 500;
 
 interface CircleMessage {
   status: string;

@@ -48,8 +48,8 @@ export const getUSDCBalance = async (chain: string, walletAddress: string): Prom
 
 export async function pollTransactionStatus(queueId: string, shouldContinue?: () => boolean): Promise<string> {
   const maxAttempts = 240; // 20 minutes total with 5-second intervals
-  const initialDelay = 5000; // Wait 5 seconds before first check
-  const pollingInterval = 5000; // Check every 5 seconds
+  const initialDelay = 2000; // Reduced from 5000ms to 2000ms
+  const pollingInterval = 2000; // Reduced from 5000ms to 2000ms
   let attempts = 0;
 
   // Initial delay to allow transaction to process
@@ -229,18 +229,13 @@ export async function waitForAttestation(
   shouldContinue?: () => boolean
 ): Promise<CircleMessage[]> {
   const maxAttempts = 720; // 6 hours with 30-second intervals
-  const initialDelay = 30000; // Wait 30 seconds before first check
-  const pollingInterval = 30000; // Poll every 30 seconds
+  const pollingInterval = 5000; // Check every 5 seconds
   let attempts = 0;
 
-  console.log('Waiting for attestation with:', {
+  console.log('Starting attestation polling for:', {
     sourceDomain,
     transactionHash
   });
-
-  // Initial delay to allow attestation to be generated
-  console.log(`Waiting ${initialDelay/1000} seconds before first attestation check...`);
-  await new Promise(resolve => setTimeout(resolve, initialDelay));
 
   while (attempts < maxAttempts) {
     if (shouldContinue && !shouldContinue()) {
