@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createWallet, getUSDCBalance, sendPayrollBatchTransaction, processRecipientMinting, pollTransactionStatus, waitForAttestation } from '../services/cctpService';
-import { CCTP_CONFIG, CCTPTransferState, CCTPTransferStatus } from '../types/cctp';
+import { CCTP_CONFIG, CCTPTransferState, CCTPTransferStatus, CircleMessage } from '../types/cctp';
 import RecipientForm from './components/RecipientForm';
 import { debounce } from 'lodash';
 import { Interface } from 'ethers';
@@ -203,140 +203,166 @@ export default function Home() {
         )
       }));
 
-      // Process the destination chain
-      const chain = recipients[0].chain;
-      const destConfig = CCTP_CONFIG[chain];
-      
-      try {
-        let retryCount = 0;
-        const maxRetries = 3;
+      // Group recipients by destination chain
+      interface RecipientWithAttestation {
+        chain: string;
+        address: string;
+        amount: string;
+        attestation: CircleMessage;
+      }
+      const recipientsByChain: { [chain: string]: RecipientWithAttestation[] } = {};
+      recipients.forEach((recipient, index) => {
+        if (!recipientsByChain[recipient.chain]) {
+          recipientsByChain[recipient.chain] = [];
+        }
+        // Find the attestation for this recipient
+        const attestation = attestationMessages.find(msg => {
+          // Extract recipient address from message
+          const recipientAddressStart = msg.message.indexOf(recipient.address.toLowerCase().slice(2));
+          return recipientAddressStart !== -1;
+        });
 
-        while (retryCount < maxRetries) {
-          try {
-            if (retryCount > 0) {
-              console.log(`Retry ${retryCount + 1}/${maxRetries} for chain ${chain}`);
-              await new Promise(resolve => setTimeout(resolve, 15000));
-            }
+        if (!attestation) {
+          console.error(`No matching attestation found for recipient ${recipient.address} on chain ${recipient.chain}`);
+          return;
+        }
 
-            // Create receiveMessage transactions using attestations
-            const messageTransmitterInterface = new Interface([
-              'function receiveMessage(bytes message, bytes attestation)'
-            ]);
+        recipientsByChain[recipient.chain].push({
+          ...recipient,
+          attestation
+        });
+      });
 
-            console.log('Attestation messages received:', {
-              totalMessages: attestationMessages.length,
-              messages: attestationMessages.map((msg, idx) => ({
-                index: idx,
-                messageLength: msg.message.length,
-                attestationLength: msg.attestation.length,
-                messagePreview: `${msg.message.slice(0, 66)}...`,
-                attestationPreview: `${msg.attestation.slice(0, 66)}...`
-              }))
-            });
+      // Process each destination chain
+      for (const [chain, chainRecipients] of Object.entries(recipientsByChain)) {
+        const destConfig = CCTP_CONFIG[chain];
+        console.log(`Processing destination chain ${chain} with ${chainRecipients.length} recipients`);
+        
+        try {
+          let retryCount = 0;
+          const maxRetries = 3;
 
-            // Create a receive message transaction for each recipient with their corresponding attestation
-            const receiveMessageTxs = attestationMessages.map((msg, index) => {
-              console.log(`Creating receive message transaction ${index + 1}/${attestationMessages.length}:`, {
-                recipientAddress: recipients[index].address,
-                messageLength: msg.message.length,
-                attestationLength: msg.attestation.length,
-                messageStart: msg.message.slice(0, 66),
-                attestationStart: msg.attestation.slice(0, 66)
+          while (retryCount < maxRetries) {
+            try {
+              if (retryCount > 0) {
+                console.log(`Retry ${retryCount + 1}/${maxRetries} for chain ${chain}`);
+                await new Promise(resolve => setTimeout(resolve, 15000));
+              }
+
+              // Create receiveMessage transactions using attestations
+              const messageTransmitterInterface = new Interface([
+                'function receiveMessage(bytes message, bytes attestation)'
+              ]);
+
+              console.log(`Processing attestations for chain ${chain}:`, {
+                chainId: destConfig.chainId,
+                recipientCount: chainRecipients.length,
+                attestations: chainRecipients.map((recipient, idx) => ({
+                  index: idx,
+                  recipientAddress: recipient.address,
+                  messageLength: recipient.attestation.message.length,
+                  attestationLength: recipient.attestation.attestation.length,
+                  messagePreview: `${recipient.attestation.message.slice(0, 66)}...`,
+                  recipientInMessage: recipient.attestation.message.indexOf(recipient.address.toLowerCase().slice(2)) !== -1
+                }))
               });
 
-              return {
-                toAddress: destConfig.messageTransmitter,
-                data: messageTransmitterInterface.encodeFunctionData('receiveMessage', [
-                  msg.message,
-                  msg.attestation
-                ]),
-                value: "0"
-              };
-            });
+              // Create receive message transactions for this chain's recipients
+              const receiveMessageTxs = chainRecipients.map((recipient) => {
+                console.log(`Creating receive message transaction for ${recipient.address} on ${chain}:`, {
+                  messageLength: recipient.attestation.message.length,
+                  attestationLength: recipient.attestation.attestation.length,
+                  messageStart: recipient.attestation.message.slice(0, 66)
+                });
 
-            console.log('Final receive message transactions:', {
-              chain,
-              chainId: destConfig.chainId,
-              messageCount: receiveMessageTxs.length,
-              recipientCount: recipients.length,
-              attestationCount: attestationMessages.length,
-              transactions: receiveMessageTxs.map((tx, idx) => ({
-                index: idx,
-                recipient: recipients[idx].address,
-                dataLength: tx.data.length
-              }))
-            });
+                return {
+                  toAddress: destConfig.messageTransmitter,
+                  data: messageTransmitterInterface.encodeFunctionData('receiveMessage', [
+                    recipient.attestation.message,
+                    recipient.attestation.attestation
+                  ]),
+                  value: "0"
+                };
+              });
 
-            // Send batch receiveMessage transaction
-            const batchResponse = await fetch('/api/wallet/receive', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-backend-wallet-address': sourceWallet.address
-              },
-              body: JSON.stringify({
-                transactions: receiveMessageTxs,
-                chain: destConfig.chainId.toString(),
-                isDestination: true
-              })
-            });
+              console.log(`Sending atomic batch receive message for chain ${chain}:`, {
+                chain,
+                chainId: destConfig.chainId,
+                messageCount: receiveMessageTxs.length,
+                recipientCount: chainRecipients.length
+              });
 
-            if (!batchResponse.ok) {
-              const error = await batchResponse.json();
-              throw new Error(error.error || 'Failed to send receive message');
-            }
+              // Send batch receiveMessage transaction for this chain
+              const batchResponse = await fetch('/api/wallet/receive', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-backend-wallet-address': sourceWallet.address
+                },
+                body: JSON.stringify({
+                  transactions: receiveMessageTxs,
+                  chain: destConfig.chainId.toString(),
+                  isDestination: true
+                })
+              });
 
-            const batchResult = await batchResponse.json();
-            console.log('Transaction submitted:', {
-              chain,
-              queueId: batchResult.result.queueId
-            });
+              if (!batchResponse.ok) {
+                const error = await batchResponse.json();
+                throw new Error(error.error || 'Failed to send receive message');
+              }
 
-            // Poll for transaction status
-            const mintTxHash = await pollTransactionStatus(batchResult.result.queueId);
+              const batchResult = await batchResponse.json();
+              console.log(`Transaction submitted for chain ${chain}:`, {
+                chain,
+                queueId: batchResult.result.queueId
+              });
 
-            // Update all recipients with success
-            recipients.forEach(recipient => {
-              setTransferState(prev => ({
-                ...prev,
-                recipientStates: {
-                  ...prev.recipientStates,
-                  [recipient.address]: {
-                    status: 'completed',
-                    message: 'Transfer completed!',
-                    transactionHash: batchTxHash,
-                    mintTransactionHash: mintTxHash
+              // Poll for transaction status
+              const mintTxHash = await pollTransactionStatus(batchResult.result.queueId);
+
+              // Update recipients for this chain with success
+              chainRecipients.forEach(recipient => {
+                setTransferState(prev => ({
+                  ...prev,
+                  recipientStates: {
+                    ...prev.recipientStates,
+                    [recipient.address]: {
+                      status: 'completed',
+                      message: 'Transfer completed!',
+                      transactionHash: batchTxHash,
+                      mintTransactionHash: mintTxHash
+                    }
                   }
-                }
-              }));
-            });
+                }));
+              });
 
-            break;
-          } catch (error) {
-            console.error(`Error processing chain ${chain} (attempt ${retryCount + 1}):`, error);
-            retryCount++;
-            
-            if (retryCount === maxRetries) {
-              throw error;
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`Failed to process chain ${chain}:`, error);
-        // Update all recipients with failure
-        recipients.forEach(recipient => {
-          setTransferState(prev => ({
-            ...prev,
-            recipientStates: {
-              ...prev.recipientStates,
-              [recipient.address]: {
-                status: 'failed',
-                message: error instanceof Error ? error.message : 'Unknown error occurred',
-                transactionHash: batchTxHash
+              break;
+            } catch (error) {
+              console.error(`Error processing chain ${chain} (attempt ${retryCount + 1}):`, error);
+              retryCount++;
+              
+              if (retryCount === maxRetries) {
+                throw error;
               }
             }
-          }));
-        });
+          }
+        } catch (error) {
+          console.error(`Failed to process chain ${chain}:`, error);
+          // Update recipients for this chain with failure
+          chainRecipients.forEach(recipient => {
+            setTransferState(prev => ({
+              ...prev,
+              recipientStates: {
+                ...prev.recipientStates,
+                [recipient.address]: {
+                  status: 'failed',
+                  message: error instanceof Error ? error.message : 'Unknown error occurred',
+                  transactionHash: batchTxHash
+                }
+              }
+            }));
+          });
+        }
       }
     } catch (error) {
       console.error('Transfer error:', error);
@@ -416,7 +442,7 @@ export default function Home() {
     <main className="min-h-screen bg-[#0f172a] p-8">
       <div className="max-w-4xl mx-auto space-y-8">
         <div className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-white">USDC Payroll Batch Transfer</h1>
+          <h1 className="text-3xl font-bold text-white">USDC Atomic Batch Sample App (CCTP + Thirdweb Engine)</h1>
           <button
             onClick={handleReset}
             className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
