@@ -1,107 +1,100 @@
 import { NextResponse } from 'next/server';
-import { Interface } from 'ethers';
 
 const API_BASE_URL = 'http://localhost:3005';
 
-async function pollTransactionStatus(queueId: string): Promise<string> {
-  const maxAttempts = 30; // 5 minutes with 10-second intervals
-  let attempts = 0;
-
-  while (attempts < maxAttempts) {
-    try {
-      const response = await fetch(`${API_BASE_URL}/transaction/status/${queueId}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch transaction status');
-      }
-
-      const data = await response.json();
-      console.log('Transaction status:', data);
-
-      if (data.result.status === 'mined' && data.result.transactionHash) {
-        // Verify onchain status
-        if (data.result.onchainStatus === 'success') {
-          return data.result.transactionHash;
-        } else {
-          throw new Error(`Transaction failed onchain: ${data.result.errorMessage || 'Unknown error'}`);
-        }
-      }
-
-      // If not mined, wait before next attempt
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      attempts++;
-    } catch (error) {
-      console.error('Error polling transaction:', error);
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      attempts++;
-    }
-  }
-
-  throw new Error('Transaction polling timeout');
-}
-
 export async function POST(request: Request) {
+  console.log('=== Incoming Request to /api/wallet/receive ===');
   try {
-    // Get the wallet address from headers
+    const body = await request.json();
+    console.log('Received request body:', body);
+
+    // Get the initiating wallet address from the request headers
     const walletAddress = request.headers.get('x-backend-wallet-address');
     if (!walletAddress) {
-      return NextResponse.json({ error: 'Missing wallet address header' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing x-backend-wallet-address header' },
+        { status: 400 }
+      );
     }
-
-    // Parse request body
-    const body = await request.json();
-    const { chain, contractAddress, abiParameters } = body;
 
     // Validate required fields
-    if (!chain || !contractAddress || !abiParameters) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    if (!body.chain || !body.transactions || !Array.isArray(body.transactions)) {
+      return NextResponse.json(
+        { error: 'Missing required fields or invalid transactions array' },
+        { status: 400 }
+      );
     }
 
-    console.log('Calling receiveMessage with:', {
-      chain,
-      contractAddress,
-      functionName: 'receiveMessage(bytes,bytes)',
-      args: abiParameters
+    const chainId = body.chain;
+
+    console.log('Processing atomic batch receive message:', {
+      chain: chainId,
+      transactionCount: body.transactions.length,
+      isDestination: body.isDestination
     });
 
-    // Make request to thirdweb API
-    const response = await fetch(`${API_BASE_URL}/contract/${chain}/${contractAddress}/write`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.NEXT_PUBLIC_THIRDWEB_ENGINE_ACCESS_TOKEN}`,
-        'X-Backend-Wallet-Address': walletAddress
-      },
-      body: JSON.stringify({
-        functionName: 'receiveMessage(bytes,bytes)',
-        args: abiParameters
-      })
+    const url = `${API_BASE_URL}/backend-wallet/${chainId}/send-transaction-batch-atomic`;
+    const headers = {
+      'Authorization': `Bearer ${process.env.NEXT_PUBLIC_THIRDWEB_ENGINE_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+      'X-Backend-Wallet-Address': walletAddress
+    };
+
+    console.log('=== Receive Request Details ===');
+    console.log('URL:', url);
+    console.log('Headers:', {
+      ...headers,
+      'Authorization': 'Bearer [HIDDEN]'
     });
+    console.log('Body:', JSON.stringify({
+      transactions: body.transactions
+    }, null, 2));
+    console.log('=============================');
 
-    if (!response.ok) {
-      const error = await response.json();
-      console.error('Error from thirdweb API:', error);
-      return NextResponse.json({ error: error.error || 'Failed to receive message' }, { status: response.status });
-    }
+    const maxRetries = 3;
+    let retryCount = 0;
 
-    const data = await response.json();
-    console.log('Thirdweb API response:', data);
+    while (retryCount < maxRetries) {
+      try {
+        const response = await fetch(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              transactions: body.transactions
+            })
+          }
+        );
 
-    if (!data.result?.queueId) {
-      throw new Error('No queueId in response');
-    }
+        console.log('Response status:', response.status);
+        const responseData = await response.json();
+        console.log('Response data:', responseData);
 
-    // Poll for transaction status
-    const txHash = await pollTransactionStatus(data.result.queueId);
-    console.log('Transaction mined:', txHash);
+        if (!response.ok) {
+          console.error('Receive error:', responseData);
+          return NextResponse.json(
+            { error: responseData.error?.message || 'Failed to receive message' },
+            { status: response.status }
+          );
+        }
 
-    return NextResponse.json({
-      result: {
-        queueId: data.result.queueId,
-        transactionHash: txHash
+        return NextResponse.json(responseData);
+      } catch (error) {
+        retryCount++;
+        await new Promise(resolve => setTimeout(resolve, 15000));
       }
-    });
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to receive message' },
+      { status: 500 }
+    );
   } catch (error) {
     console.error('Error in receive endpoint:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Failed to receive message' },
+      { status: 500 }
+    );
   }
 } 

@@ -1,28 +1,32 @@
 import { NextResponse } from 'next/server';
 
 const API_BASE_URL = 'https://iris-api-sandbox.circle.com/v2/messages';
-const MAX_ATTEMPTS = 3; // We'll do a few quick attempts in the API route
-const RETRY_DELAY = 2000; // 2 seconds between attempts
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAY = 500;
+
+interface CircleMessage {
+  status: string;
+  attestation: string;
+  message: string;
+}
 
 export async function GET(
   request: Request,
-  { params }: { params: { domain: string; txHash: string } }
+  context: { params: { domain: string; txHash: string } }
 ) {
-  const { domain, txHash } = params;
-  
   try {
+    const params = await Promise.resolve(context.params);
+    const { domain, txHash } = params;
+    
     if (!domain || !txHash) {
       return NextResponse.json(
-        { error: 'Domain and transaction hash are required' },
+        { error: 'Missing required parameters' },
         { status: 400 }
       );
     }
     
-    console.log('=== Checking Attestation ===');
-    console.log('Domain:', domain);
-    console.log('Transaction Hash:', txHash);
+    console.log('Checking attestation:', { domain, txHash });
 
-    // Try a few quick attempts
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         const response = await fetch(
@@ -35,58 +39,59 @@ export async function GET(
           }
         );
 
-        console.log(`Attempt ${attempt} - Response status:`, response.status);
-        const data = await response.json();
-        console.log(`Attempt ${attempt} - Attestation data:`, data);
-
-        // If we get a successful response
-        if (response.ok) {
-          const message = data.messages?.[0];
-          if (!message) {
-            console.log('No message found in response');
-            if (attempt < MAX_ATTEMPTS) {
-              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-              continue;
-            }
-            break;
-          }
-
-          // If status is complete, return the attestation
-          if (message.status === 'complete') {
-            return NextResponse.json({
-              message: message.message,
-              attestation: message.attestation
-            });
-          }
-          
-          // Not complete yet, continue polling if we have more attempts
+        if (!response.ok) {
           if (attempt < MAX_ATTEMPTS) {
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
             continue;
           }
-          
-          // Return 202 to indicate still processing
-          return NextResponse.json({
-            status: message.status,
-            message: 'Attestation is still processing'
-          }, { status: 202 });
+          throw new Error(`Circle API error: ${response.status}`);
         }
 
-        // If response not ok, wait before next attempt
-        if (attempt < MAX_ATTEMPTS) {
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        const data = await response.json();
+        console.log('Circle API response:', data);
+
+        if (!data.messages || !Array.isArray(data.messages) || data.messages.length === 0) {
+          return NextResponse.json(
+            { status: 'processing', message: 'No messages found yet' },
+            { status: 202 }
+          );
         }
+
+        // Check if all attestations are ready
+        const allComplete = data.messages.every((message: CircleMessage) => 
+          message.status === 'complete' && message.attestation && message.attestation !== 'PENDING'
+        );
+
+        if (!allComplete) {
+          return NextResponse.json(
+            { status: 'processing', message: 'Some attestations still processing' },
+            { status: 202 }
+          );
+        }
+
+        console.log('All attestations ready:', {
+          messageCount: data.messages.length,
+          messages: data.messages.map((msg: CircleMessage, idx: number) => ({
+            index: idx,
+            status: msg.status,
+            hasAttestation: !!msg.attestation
+          }))
+        });
+
+        return NextResponse.json({ messages: data.messages });
+
       } catch (error) {
         console.error(`Attempt ${attempt} failed:`, error);
         if (attempt < MAX_ATTEMPTS) {
           await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+          continue;
         }
+        throw error;
       }
     }
 
-    // After all attempts, return 202 to indicate still processing
     return NextResponse.json(
-      { status: 'pending', message: 'Attestation is still processing' },
+      { status: 'pending', message: 'Attestation still processing' },
       { status: 202 }
     );
 

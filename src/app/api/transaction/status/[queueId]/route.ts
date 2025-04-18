@@ -4,10 +4,10 @@ const API_BASE_URL = 'http://localhost:3005';
 
 export async function GET(
   request: Request,
-  { params }: { params: { queueId: string } }
+  context: { params: { queueId: string } }
 ) {
   try {
-    const queueId = params.queueId;
+    const { queueId } = await context.params;
     
     console.log('=== Checking Transaction Status ===');
     console.log('QueueId:', queueId);
